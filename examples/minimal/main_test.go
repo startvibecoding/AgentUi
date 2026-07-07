@@ -258,6 +258,79 @@ func TestMinimalPopupConsumesInputUntilClosed(t *testing.T) {
 	}
 }
 
+func TestMinimalSubmitShowsActiveTurnThenCommitPrintsAndClearsLiveView(t *testing.T) {
+	a := newApp()
+	a.width = 64
+	a.height = 20
+	a.rebuild()
+
+	model, _ := a.Update(agentui.KeyMsg{Type: agentui.KeyRunes, Runes: []rune("scrollback check")})
+	a = model.(*app)
+	model, submitCmd := a.Update(agentui.KeyMsg{Type: agentui.KeyEnter})
+	a = model.(*app)
+	if submitCmd == nil {
+		t.Fatal("enter should return submit command")
+	}
+	model, cmd := a.Update(submitCmd())
+	a = model.(*app)
+	if cmd != nil {
+		t.Fatal("submit should keep the turn live instead of printing it immediately")
+	}
+	view := xansi.Strip(a.View())
+	if !strings.Contains(view, "scrollback check") {
+		t.Fatalf("submitted text should be visible in active live view:\n%s", view)
+	}
+	if strings.Contains(view, "Printed ") {
+		t.Fatalf("managed live view should not contain a fake printed-status block:\n%s", view)
+	}
+
+	model, printCmd := a.Update(agentui.KeyMsg{Type: agentui.KeyCtrlP})
+	a = model.(*app)
+	if printCmd == nil {
+		t.Fatal("Ctrl+P should return print command for active turn")
+	}
+	view = xansi.Strip(a.View())
+	if strings.Contains(view, "scrollback check") {
+		t.Fatalf("committed turn stayed in managed live view:\n%s", view)
+	}
+	if strings.Contains(view, "Printed ") {
+		t.Fatalf("managed live view should not contain a fake printed-status block:\n%s", view)
+	}
+	if !strings.Contains(view, "terminal scrollback") {
+		t.Fatalf("live view should explain scrollback printing:\n%s", view)
+	}
+}
+
+func TestMinimalCommitCommandPrintsActiveTurn(t *testing.T) {
+	a := newApp()
+	a.width = 64
+	a.height = 20
+	a.rebuild()
+
+	model, _ := a.Update(agentui.KeyMsg{Type: agentui.KeyRunes, Runes: []rune("command commit")})
+	a = model.(*app)
+	model, submitCmd := a.Update(agentui.KeyMsg{Type: agentui.KeyEnter})
+	a = model.(*app)
+	model, _ = a.Update(submitCmd())
+	a = model.(*app)
+
+	model, _ = a.Update(agentui.KeyMsg{Type: agentui.KeyRunes, Runes: []rune("/commit")})
+	a = model.(*app)
+	model, commitCmd := a.Update(agentui.KeyMsg{Type: agentui.KeyEnter})
+	a = model.(*app)
+	if commitCmd == nil {
+		t.Fatal("enter should return submit command for /commit")
+	}
+	model, printCmd := a.Update(commitCmd())
+	a = model.(*app)
+	if printCmd == nil {
+		t.Fatal("/commit should return print command for active turn")
+	}
+	if view := xansi.Strip(a.View()); strings.Contains(view, "command commit") {
+		t.Fatalf("/commit should remove active turn from live view:\n%s", view)
+	}
+}
+
 func TestMinimalSuggestionsShowForSlash(t *testing.T) {
 	a := newApp()
 	a.width = 48

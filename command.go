@@ -7,6 +7,11 @@ type Cmd func() Msg
 
 type batchMsg []Cmd
 type sequenceMsg []Cmd
+type printBatchMsg []printMsg
+type printMsg struct {
+	text    string
+	newline bool
+}
 
 // Quit is a command that stops a Program.
 var Quit Cmd = func() Msg { return QuitMsg{} }
@@ -14,6 +19,18 @@ var Quit Cmd = func() Msg { return QuitMsg{} }
 // Repaint asks a Program to render the current View again without calling
 // Update. It is useful after out-of-band writes or external state changes.
 var Repaint Cmd = func() Msg { return repaintMsg{} }
+
+// Print writes text outside the managed render tree. In the normal screen this
+// lets completed blocks move into the terminal's native scrollback while the
+// Model keeps only live/active content in View.
+func Print(text string) Cmd {
+	return func() Msg { return printMsg{text: text} }
+}
+
+// Println is like Print, but appends one terminal newline after text.
+func Println(text string) Cmd {
+	return func() Msg { return printMsg{text: text, newline: true} }
+}
 
 // Batch runs commands concurrently and forwards each returned message.
 func Batch(cmds ...Cmd) Cmd {

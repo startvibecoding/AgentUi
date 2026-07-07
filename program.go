@@ -19,6 +19,7 @@ type programConfig struct {
 	renderer       bool
 	bracketedPaste bool
 	escTimeout     time.Duration
+	liveHeight     int
 }
 
 // ProgramOption configures a Program.
@@ -76,6 +77,18 @@ func WithoutRenderer() ProgramOption {
 	return func(c *programConfig) { c.renderer = false }
 }
 
+// WithLiveHeight sets the maximum number of rows managed by the normal-screen
+// live renderer. When unset, Program uses the terminal height when it can read
+// one. Overflowing top rows are printed to native terminal scrollback.
+func WithLiveHeight(h int) ProgramOption {
+	return func(c *programConfig) {
+		if h < 0 {
+			h = 0
+		}
+		c.liveHeight = h
+	}
+}
+
 // Program runs a Model and serializes messages onto one update loop.
 type Program struct {
 	model Model
@@ -88,6 +101,11 @@ type Program struct {
 	running bool
 	closed  bool
 	last    string
+	liveH   int
+	termW   int
+	termH   int
+	autoTop int
+	autoLog []string
 }
 
 // NewProgram creates a Program for m.
@@ -132,15 +150,34 @@ func (p *Program) Send(msg Msg) {
 
 // Println writes a line outside the managed render tree.
 func (p *Program) Println(s string) {
+	p.Print(s, true)
+}
+
+// Print writes text outside the managed render tree. If newline is true, one
+// terminal newline is appended after s.
+func (p *Program) Print(s string, newline bool) {
 	if p.cfg.output == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	fmt.Fprint(p.cfg.output, "\x1b[2K\r")
-	fmt.Fprint(p.cfg.output, terminalLineEndings(s))
-	fmt.Fprint(p.cfg.output, "\r\n")
-	if p.cfg.renderer && p.last != "" {
+	p.printLocked(s, newline)
+}
+
+func (p *Program) printLocked(s string, newline bool) {
+	p.printBatchLocked([]printMsg{{text: s, newline: newline}}, true)
+}
+
+func (p *Program) printBatchLocked(msgs []printMsg, repaint bool) {
+	p.clearLiveLocked()
+	for _, msg := range msgs {
+		fmt.Fprint(p.cfg.output, terminalLineEndings(msg.text))
+		if msg.newline {
+			fmt.Fprint(p.cfg.output, "\r\n")
+		}
+	}
+	p.liveH = 0
+	if repaint && p.cfg.renderer && p.last != "" {
 		p.renderLocked(p.last)
 	}
 }
@@ -169,15 +206,26 @@ func (p *Program) Run() (Model, error) {
 	if p.cfg.input != nil {
 		go p.readInput()
 	}
+	var initialSize *WindowSizeMsg
 	if f, ok := p.cfg.output.(*os.File); ok {
 		if w, h, ok := terminalSize(f); ok {
-			p.Send(WindowSizeMsg{Width: w, Height: h})
+			p.setTerminalSize(w, h)
+			initialSize = &WindowSizeMsg{Width: w, Height: h}
 		}
 		go p.watchResize(f)
 	}
 
 	if cmd := p.model.Init(); cmd != nil {
 		p.exec(cmd)
+	}
+	if initialSize != nil {
+		next, cmd := p.model.Update(*initialSize)
+		if next != nil {
+			p.model = next
+		}
+		if cmd != nil {
+			p.exec(cmd)
+		}
 	}
 	p.render()
 
@@ -198,15 +246,34 @@ func (p *Program) Run() (Model, error) {
 			case repaintMsg:
 				p.render()
 				continue
+			case printMsg:
+				p.Print(msg.text, msg.newline)
+				continue
+			case printBatchMsg:
+				p.printBatch(msg)
+				continue
+			}
+			if msg, ok := msg.(WindowSizeMsg); ok {
+				p.setTerminalSize(msg.Width, msg.Height)
 			}
 
 			next, cmd := p.model.Update(msg)
 			if next != nil {
 				p.model = next
 			}
-			p.render()
+			var pending Msg
 			if cmd != nil {
-				p.exec(cmd)
+				if msg, ok := p.startCmdAndWait(cmd, time.Millisecond); ok {
+					if p.handlePrintBeforeRender(msg) {
+						p.render()
+						continue
+					}
+					pending = msg
+				}
+			}
+			p.render()
+			if pending != nil {
+				p.forwardCmdMsg(pending)
 			}
 		case <-p.done:
 			return p.model, nil
@@ -220,22 +287,83 @@ func (p *Program) exec(cmd Cmd) {
 	}
 	go func() {
 		msg := cmd()
-		switch m := msg.(type) {
-		case nil:
-			return
-		case batchMsg:
-			for _, cmd := range m {
-				p.exec(cmd)
-			}
-		case sequenceMsg:
-			p.execSequence(m)
-		default:
-			p.Send(msg)
-		}
+		p.forwardCmdMsg(msg)
 	}()
 }
 
+func (p *Program) startCmdAndWait(cmd Cmd, wait time.Duration) (Msg, bool) {
+	if cmd == nil {
+		return nil, true
+	}
+	ch := make(chan Msg, 1)
+	go func() { ch <- cmd() }()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case msg := <-ch:
+		return msg, true
+	case <-timer.C:
+		go func() { p.forwardCmdMsg(<-ch) }()
+		return nil, false
+	}
+}
+
+func (p *Program) forwardCmdMsg(msg Msg) {
+	switch m := msg.(type) {
+	case nil:
+		return
+	case batchMsg:
+		for _, cmd := range m {
+			p.exec(cmd)
+		}
+	case sequenceMsg:
+		p.execSequence(m)
+	default:
+		p.Send(msg)
+	}
+}
+
+func (p *Program) handlePrintBeforeRender(msg Msg) bool {
+	switch m := msg.(type) {
+	case nil:
+		return false
+	case printMsg:
+		p.printWithoutRepaint([]printMsg{m})
+		return true
+	case printBatchMsg:
+		p.printWithoutRepaint(m)
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Program) printWithoutRepaint(msgs []printMsg) {
+	if p.cfg.output == nil || len(msgs) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.printBatchLocked(msgs, false)
+}
+
 func (p *Program) execSequence(cmds []Cmd) {
+	var prints []printMsg
+	flushPrints := func() bool {
+		if len(prints) == 0 {
+			return true
+		}
+		batch := make(printBatchMsg, len(prints))
+		copy(batch, prints)
+		prints = prints[:0]
+		select {
+		case p.msgs <- batch:
+			return true
+		case <-p.done:
+			return false
+		}
+	}
+
 	for _, cmd := range cmds {
 		if cmd == nil {
 			continue
@@ -249,18 +377,42 @@ func (p *Program) execSequence(cmds []Cmd) {
 		case nil:
 			continue
 		case batchMsg:
+			if !flushPrints() {
+				return
+			}
 			for _, cmd := range msg {
 				p.exec(cmd)
 			}
 		case sequenceMsg:
+			if !flushPrints() {
+				return
+			}
 			p.execSequence(msg)
 		case QuitMsg:
+			if !flushPrints() {
+				return
+			}
 			p.Send(msg)
 			return
+		case printMsg:
+			prints = append(prints, msg)
 		default:
+			if !flushPrints() {
+				return
+			}
 			p.Send(msg)
 		}
 	}
+	flushPrints()
+}
+
+func (p *Program) printBatch(msgs []printMsg) {
+	if p.cfg.output == nil || len(msgs) == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.printBatchLocked(msgs, true)
 }
 
 func (p *Program) render() {
@@ -278,9 +430,114 @@ func (p *Program) renderLocked(view string) {
 	if p.cfg.output == nil {
 		return
 	}
-	fmt.Fprint(p.cfg.output, "\x1b[?25l\x1b[H\x1b[2J")
+	if p.cfg.altScreen {
+		fmt.Fprint(p.cfg.output, "\x1b[?25l\x1b[H\x1b[2J")
+		p.resetAutoScrollback()
+	} else {
+		fmt.Fprint(p.cfg.output, "\x1b[?25l\x1b[?7l")
+		p.clearLiveLocked()
+		commit, live := p.splitNormalView(view)
+		if commit != "" {
+			fmt.Fprint(p.cfg.output, terminalLineEndings(commit))
+			fmt.Fprint(p.cfg.output, "\r\n")
+		}
+		view = live
+	}
 	fmt.Fprint(p.cfg.output, terminalLineEndings(view))
 	fmt.Fprint(p.cfg.output, "\x1b[0m")
+	if !p.cfg.altScreen {
+		fmt.Fprint(p.cfg.output, "\x1b[?7h")
+	}
+	p.liveH = viewHeight(view)
+}
+
+func (p *Program) splitNormalView(view string) (string, string) {
+	maxLive := p.normalLiveHeight()
+	if maxLive <= 0 || view == "" {
+		p.resetAutoScrollback()
+		return "", view
+	}
+	lines := strings.Split(view, "\n")
+	if p.autoTop > len(lines) || !sameStringPrefix(lines, p.autoLog) {
+		p.resetAutoScrollback()
+	}
+	targetTop := len(lines) - maxLive
+	if targetTop < 0 {
+		targetTop = 0
+	}
+	if targetTop < p.autoTop {
+		targetTop = p.autoTop
+	}
+	var commit string
+	if targetTop > p.autoTop {
+		commitLines := append([]string(nil), lines[p.autoTop:targetTop]...)
+		commit = strings.Join(commitLines, "\n")
+		p.autoLog = append(p.autoLog, commitLines...)
+		p.autoTop = targetTop
+	}
+	live := strings.Join(lines[p.autoTop:], "\n")
+	return commit, live
+}
+
+func (p *Program) resetAutoScrollback() {
+	p.autoTop = 0
+	p.autoLog = nil
+}
+
+func sameStringPrefix(lines, prefix []string) bool {
+	if len(prefix) > len(lines) {
+		return false
+	}
+	for i := range prefix {
+		if lines[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Program) normalLiveHeight() int {
+	if p.cfg.liveHeight > 0 {
+		return p.cfg.liveHeight
+	}
+	if p.termH > 0 {
+		return p.termH
+	}
+	return 0
+}
+
+func (p *Program) setTerminalSize(w, h int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.termW = w
+	p.termH = h
+}
+
+func (p *Program) clearLiveLocked() {
+	if p.liveH <= 0 || p.cfg.output == nil {
+		return
+	}
+	if p.liveH > 1 {
+		fmt.Fprintf(p.cfg.output, "\x1b[%dA", p.liveH-1)
+	}
+	for i := 0; i < p.liveH; i++ {
+		fmt.Fprint(p.cfg.output, "\r\x1b[2K")
+		if i < p.liveH-1 {
+			fmt.Fprint(p.cfg.output, "\x1b[1B")
+		}
+	}
+	if p.liveH > 1 {
+		fmt.Fprintf(p.cfg.output, "\x1b[%dA", p.liveH-1)
+	}
+	fmt.Fprint(p.cfg.output, "\r")
+	p.liveH = 0
+}
+
+func viewHeight(s string) int {
+	if s == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
 }
 
 func terminalLineEndings(s string) string {
@@ -343,7 +600,7 @@ func (p *Program) exitTerminalModes() {
 	if p.cfg.reportFocus {
 		fmt.Fprint(p.cfg.output, "\x1b[?1004l")
 	}
-	fmt.Fprint(p.cfg.output, "\x1b[?25h\x1b[0m")
+	fmt.Fprint(p.cfg.output, "\x1b[?7h\x1b[?25h\x1b[0m")
 	if p.cfg.altScreen {
 		fmt.Fprint(p.cfg.output, "\x1b[?1049l")
 	}

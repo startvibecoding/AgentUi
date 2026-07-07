@@ -28,11 +28,17 @@ type app struct {
 	history  history.Model
 	pastes   *paste.Manager
 	messages []string
+	turns    []turn
 
 	mdRenderer        *renderutil.MarkdownRenderer
 	assistantRaw      map[int]string
 	assistantRendered map[int]string
 	assistantDirty    map[int]bool
+}
+
+type turn struct {
+	user         string
+	assistantRaw string
 }
 
 func newApp() *app {
@@ -46,7 +52,8 @@ func newApp() *app {
 		pastes:  paste.Default(),
 		messages: []string{
 			style.New().Foreground(style.Color("86")).Bold(true).Render("agentui minimal demo"),
-			style.New().Foreground(style.Color("240")).Render("Enter submits. Alt+Enter/Ctrl+J inserts a newline. Ctrl+C quits."),
+			style.New().Foreground(style.Color("240")).Render("Completed turns print to terminal scrollback. The managed view keeps only active content."),
+			style.New().Foreground(style.Color("240")).Render("Enter starts a live turn. Ctrl+P or /commit prints it to scrollback. Ctrl+C quits."),
 		},
 		assistantRaw:      make(map[int]string),
 		assistantRendered: make(map[int]string),
@@ -96,6 +103,10 @@ func (a *app) Update(msg agentui.Msg) (agentui.Model, agentui.Cmd) {
 				a.openPopup()
 			}
 			return a, nil
+		case agentui.KeyCtrlP:
+			cmd := a.commitLiveTurns()
+			a.rebuild()
+			return a, cmd
 		case agentui.KeyUp:
 			if a.suggest.Visible() {
 				a.suggest = a.suggest.CursorUp()
@@ -147,6 +158,13 @@ func (a *app) Update(msg agentui.Msg) (agentui.Model, agentui.Cmd) {
 			return a, nil
 		}
 		text = a.pastes.Expand(text)
+		if text == "/commit" {
+			cmd := a.commitLiveTurns()
+			a.input = a.input.Reset()
+			a.updateSuggestions()
+			a.rebuild()
+			return a, cmd
+		}
 		if a.handleCommand(text) {
 			a.input = a.input.Reset()
 			a.updateSuggestions()
@@ -154,21 +172,21 @@ func (a *app) Update(msg agentui.Msg) (agentui.Model, agentui.Cmd) {
 			return a, nil
 		}
 		a.history = a.history.Record(text)
-		a.messages = append(a.messages, style.New().Foreground(style.Color("86")).Bold(true).Render("You: ")+text)
-		a.addAssistantMarkdown(echoMarkdown(text))
+		a.appendLiveTurn(text)
 		a.input = a.input.Reset()
 		a.updateSuggestions()
 		a.rebuild()
+		return a, nil
 	}
 	return a, nil
 }
 
 func (a *app) View() string {
-	body := a.view.View()
+	body := renderutil.WrapANSI(a.view.Content(), a.width)
 	if a.popup.Open {
 		body = a.popup.View()
 	}
-	footerText := ansi.Truncate(" / suggestions  Tab apply  Ctrl+O popup  Ctrl+C quit", a.width, "")
+	footerText := ansi.Truncate(" / suggestions  Tab apply  Ctrl+O popup  Ctrl+P commit  Ctrl+C quit", a.width, "")
 	footer := style.New().Foreground(style.Color("240")).BorderTop(true).Width(a.width).Render(footerText)
 	return style.JoinVertical(body, a.suggest.View(), a.input.View(), footer)
 }
@@ -264,6 +282,7 @@ func (a *app) popupLines(width int) []string {
 func commandSuggestionItems() []suggest.Item {
 	return []suggest.Item{
 		{Label: "/popup", Value: "/popup", Description: "open regression popup"},
+		{Label: "/commit", Value: "/commit", Description: "print active turn to scrollback"},
 		{Label: "/markdown", Value: "/markdown", Description: "append markdown regression text"},
 		{Label: "/mode", Value: "/mode ", Description: "show argument suggestions"},
 		{Label: "/clear", Value: "/clear", Description: "clear transcript"},
@@ -315,18 +334,50 @@ func (a *app) handleCommand(text string) bool {
 		a.addAssistantMarkdown("### Manual markdown regression\n\n用户查看 *AGENTS* 文件内容，并检查 `internal/tui/renderutil/ansi_wrap.go`。\n\n- 1111*22222*3333\n- `/home/free/src/vibecoding/internal/tui/components/editor/editor.go`\n")
 	case "/clear":
 		a.messages = nil
+		a.turns = nil
 		a.assistantRaw = make(map[int]string)
 		a.assistantRendered = make(map[int]string)
 		a.assistantDirty = make(map[int]bool)
 		a.addAssistantMarkdown("Transcript cleared.")
 	case "/help":
-		a.addAssistantMarkdown("### Minimal commands\n\n- `/popup` opens the regression popup.\n- `/markdown` appends Markdown/CJK/path content.\n- `/mode ` shows argument suggestions.\n- `/clear` clears the transcript.\n")
+		a.addAssistantMarkdown("### Minimal commands\n\n- `/popup` opens the regression popup.\n- `/commit` prints the active turn to terminal scrollback.\n- `/markdown` appends Markdown/CJK/path content.\n- `/mode ` shows argument suggestions.\n- `/clear` clears the transcript.\n")
 	case "/mode plan", "/mode agent", "/mode yolo":
 		a.addAssistantMarkdown("Mode suggestion applied: `" + text + "`")
 	default:
 		return false
 	}
 	return true
+}
+
+func (a *app) appendLiveTurn(text string) {
+	a.turns = append(a.turns, turn{
+		user:         text,
+		assistantRaw: echoMarkdown(text),
+	})
+}
+
+func (a *app) commitLiveTurns() agentui.Cmd {
+	if len(a.turns) == 0 {
+		return nil
+	}
+	blocks := make([]string, 0, len(a.turns))
+	for _, turn := range a.turns {
+		blocks = append(blocks, a.renderTurn(turn))
+	}
+	a.turns = nil
+	return agentui.Println(strings.Join(blocks, "\n\n"))
+}
+
+func (a *app) renderCompletedAssistantMessage(raw string) string {
+	prefix := style.New().Foreground(style.Color("15")).Render("Assistant: ")
+	width := a.assistantMarkdownWidth()
+	if renderutil.LooksLikeMarkdown(raw) {
+		rendered := renderutil.RenderMarkdown(raw, width)
+		if strings.TrimSpace(renderutil.StripANSI(rendered)) != "" {
+			return prefix + renderutil.WrapANSI(rendered, width)
+		}
+	}
+	return prefix + renderutil.WrapPlainText(raw, width)
 }
 
 func (a *app) renderTranscriptContent() string {
@@ -338,7 +389,26 @@ func (a *app) renderTranscriptContent() string {
 		}
 		blocks = append(blocks, rendered)
 	}
+	if live := a.renderLiveTurns(); live != "" {
+		blocks = append(blocks, live)
+	}
 	return strings.Join(blocks, "\n\n")
+}
+
+func (a *app) renderLiveTurns() string {
+	if len(a.turns) == 0 {
+		return ""
+	}
+	blocks := make([]string, 0, len(a.turns))
+	for _, turn := range a.turns {
+		blocks = append(blocks, a.renderTurn(turn))
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+func (a *app) renderTurn(turn turn) string {
+	user := style.New().Foreground(style.Color("86")).Bold(true).Render("You: ") + turn.user
+	return user + "\n" + a.renderCompletedAssistantMessage(turn.assistantRaw)
 }
 
 func (a *app) renderMessageAt(idx int) string {
