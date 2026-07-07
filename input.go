@@ -4,39 +4,120 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
+type inputRead struct {
+	data []byte
+	err  error
+}
+
 func (p *Program) readInput() {
-	buf := make([]byte, 4096)
+	reads := make(chan inputRead, 1)
+	go readInputChunks(p.cfg.input, reads)
+
 	var pending []byte
-	for {
-		n, err := p.cfg.input.Read(buf)
-		if n > 0 {
-			pending = append(pending, buf[:n]...)
-			msgs, rest := ParseInput(pending)
-			pending = rest
-			for _, msg := range msgs {
-				p.Send(msg)
+	var timer *time.Timer
+	var timerC <-chan time.Time
+
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
 			}
 		}
-		if err != nil {
-			if err != io.EOF {
-				p.Send(QuitMsg{})
+		timer = nil
+		timerC = nil
+	}
+	startTimer := func() {
+		stopTimer()
+		if p.cfg.escTimeout <= 0 || !shouldTimeoutPending(pending) {
+			return
+		}
+		timer = time.NewTimer(p.cfg.escTimeout)
+		timerC = timer.C
+	}
+
+	for {
+		select {
+		case read := <-reads:
+			if len(read.data) > 0 {
+				pending = append(pending, read.data...)
+				pending = p.sendParsedInput(pending, false)
 			}
+			if read.err != nil {
+				stopTimer()
+				if len(pending) > 0 {
+					p.sendParsedInput(pending, true)
+				}
+				p.Send(QuitMsg{})
+				return
+			}
+			if len(pending) > 0 {
+				startTimer()
+			} else {
+				stopTimer()
+			}
+		case <-timerC:
+			timerC = nil
+			if len(pending) > 0 {
+				pending = p.sendParsedInput(pending, true)
+			}
+			if len(pending) > 0 {
+				startTimer()
+			}
+		case <-p.done:
+			stopTimer()
 			return
 		}
 	}
 }
 
+func readInputChunks(r io.Reader, reads chan<- inputRead) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.Read(buf)
+		read := inputRead{err: err}
+		if n > 0 {
+			read.data = append([]byte(nil), buf[:n]...)
+		}
+		reads <- read
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (p *Program) sendParsedInput(data []byte, flush bool) []byte {
+	msgs, rest := parseInput(data, flush)
+	for _, msg := range msgs {
+		p.Send(msg)
+	}
+	return rest
+}
+
 // ParseInput converts terminal bytes into messages. The returned rest contains
 // incomplete trailing escape or UTF-8 sequences.
 func ParseInput(data []byte) ([]Msg, []byte) {
+	return parseInput(data, false)
+}
+
+func parseInput(data []byte, flush bool) ([]Msg, []byte) {
 	var msgs []Msg
 	for len(data) > 0 {
 		if data[0] == 0x1b {
 			msg, n, complete := parseEscape(data)
 			if !complete {
+				if flush {
+					msgs = append(msgs, KeyMsg{Type: KeyEsc})
+					data = data[1:]
+					continue
+				}
 				return msgs, data
 			}
 			if msg != nil {
@@ -78,6 +159,13 @@ func ParseInput(data []byte) ([]Msg, []byte) {
 		}
 	}
 	return msgs, nil
+}
+
+func shouldTimeoutPending(data []byte) bool {
+	if len(data) == 0 || data[0] != 0x1b {
+		return false
+	}
+	return !strings.HasPrefix(string(data), "\x1b[200~")
 }
 
 func parseEscape(data []byte) (Msg, int, bool) {

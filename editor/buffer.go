@@ -18,6 +18,18 @@ func newBuffer() *buffer {
 	return &buffer{lines: []string{""}}
 }
 
+func (b *buffer) Clone() *buffer {
+	if b == nil {
+		return newBuffer()
+	}
+	return &buffer{
+		lines:        append([]string(nil), b.lines...),
+		cursorLine:   b.cursorLine,
+		cursorCol:    b.cursorCol,
+		preferredCol: b.preferredCol,
+	}
+}
+
 func (b *buffer) Value() string {
 	return strings.Join(b.lines, "\n")
 }

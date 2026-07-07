@@ -42,14 +42,16 @@ func (m Model) Init() agentui.Cmd { return nil }
 func (m Model) Focus() Model      { m.focus = true; m.cursorOn = true; return m }
 func (m Model) Blur() Model       { m.focus = false; return m }
 func (m Model) Focused() bool     { return m.focus }
-func (m Model) Value() string     { return m.buf.Value() }
+func (m Model) Value() string     { return m.readBuffer().Value() }
 
 func (m Model) SetValue(text string) Model {
+	m = m.withBufferCopy()
 	m.buf.SetValue(text)
 	return m
 }
 
 func (m Model) Reset() Model {
+	m = m.withBufferCopy()
 	m.buf.Reset()
 	return m
 }
@@ -61,27 +63,30 @@ func (m Model) Placeholder() string                { return m.placeholder }
 func (m Model) SetPrompt(s string) Model           { m.prompt = s; return m }
 func (m Model) SetStyle(s style.Style) Model       { m.style = s; return m }
 func (m Model) SetCursorStyle(s style.Style) Model { m.cursorStyle = s; return m }
-func (m Model) LineCount() int                     { return m.buf.LineCount() }
-func (m Model) CursorPos() (int, int)              { return m.buf.CursorPos() }
+func (m Model) LineCount() int                     { return m.readBuffer().LineCount() }
+func (m Model) CursorPos() (int, int)              { return m.readBuffer().CursorPos() }
 
 func (m Model) CursorEnd() Model {
+	m = m.withBufferCopy()
 	m.buf.MoveEndAll()
 	return m
 }
 
 func (m Model) InsertString(s string) Model {
+	m = m.withBufferCopy()
 	m.buf.InsertString(s)
 	return m
 }
 
 func (m Model) AtFirstLine() bool {
-	line, _ := m.buf.CursorPos()
+	line, _ := m.readBuffer().CursorPos()
 	return line == 0
 }
 
 func (m Model) AtLastLine() bool {
-	line, _ := m.buf.CursorPos()
-	return line >= m.buf.LineCount()-1
+	buf := m.readBuffer()
+	line, _ := buf.CursorPos()
+	return line >= buf.LineCount()-1
 }
 
 func (m Model) Update(msg agentui.Msg) (Model, agentui.Cmd) {
@@ -97,6 +102,7 @@ func (m Model) Update(msg agentui.Msg) (Model, agentui.Cmd) {
 
 func (m Model) handleKey(msg agentui.KeyMsg) (Model, agentui.Cmd) {
 	if msg.Type == agentui.KeyEnter && msg.Alt {
+		m = m.withBufferCopy()
 		m.buf.InsertNewline()
 		return m, nil
 	}
@@ -104,42 +110,57 @@ func (m Model) handleKey(msg agentui.KeyMsg) (Model, agentui.Cmd) {
 	case agentui.KeyEnter:
 		return m, func() agentui.Msg { return SubmitMsg{} }
 	case agentui.KeyCtrlJ:
+		m = m.withBufferCopy()
 		m.buf.InsertNewline()
 	case agentui.KeyBackspace, agentui.KeyCtrlH:
+		m = m.withBufferCopy()
 		m.buf.DeleteBack()
 	case agentui.KeyDelete:
+		m = m.withBufferCopy()
 		m.buf.DeleteForward()
 	case agentui.KeyLeft:
+		m = m.withBufferCopy()
 		if msg.Alt {
 			m.buf.MoveWordLeft()
 		} else {
 			m.buf.MoveLeft()
 		}
 	case agentui.KeyRight:
+		m = m.withBufferCopy()
 		if msg.Alt {
 			m.buf.MoveWordRight()
 		} else {
 			m.buf.MoveRight()
 		}
 	case agentui.KeyCtrlLeft:
+		m = m.withBufferCopy()
 		m.buf.MoveWordLeft()
 	case agentui.KeyCtrlRight:
+		m = m.withBufferCopy()
 		m.buf.MoveWordRight()
 	case agentui.KeyUp:
+		m = m.withBufferCopy()
 		m.buf.MoveUp()
 	case agentui.KeyDown:
+		m = m.withBufferCopy()
 		m.buf.MoveDown()
 	case agentui.KeyHome, agentui.KeyCtrlA:
+		m = m.withBufferCopy()
 		m.buf.MoveHome()
 	case agentui.KeyEnd, agentui.KeyCtrlE:
+		m = m.withBufferCopy()
 		m.buf.MoveEnd()
 	case agentui.KeyCtrlK:
+		m = m.withBufferCopy()
 		m.buf.DeleteToLineEnd()
 	case agentui.KeyCtrlU:
+		m = m.withBufferCopy()
 		m.buf.DeleteToLineStart()
 	case agentui.KeyCtrlW:
+		m = m.withBufferCopy()
 		m.buf.DeleteWordBack()
 	case agentui.KeyRunes:
+		m = m.withBufferCopy()
 		for _, r := range msg.Runes {
 			if r == '\n' {
 				m.buf.InsertNewline()
@@ -148,8 +169,10 @@ func (m Model) handleKey(msg agentui.KeyMsg) (Model, agentui.Cmd) {
 			}
 		}
 	case agentui.KeySpace:
+		m = m.withBufferCopy()
 		m.buf.InsertRune(' ')
 	case agentui.KeyTab:
+		m = m.withBufferCopy()
 		m.buf.InsertString("  ")
 	}
 	return m, nil
@@ -166,14 +189,15 @@ func (m Model) View() string {
 		availW = 1
 	}
 
-	text := m.buf.Value()
+	buf := m.readBuffer()
+	text := buf.Value()
 	isEmpty := text == ""
 	var displayLines []displayLine
 	switch {
 	case isEmpty && !m.focus:
 		displayLines = []displayLine{{text: ""}}
 	case isEmpty:
-		displayLines = []displayLine{{text: m.renderEmptyLine()}}
+		displayLines = []displayLine{{text: m.renderEmptyLine(availW)}}
 	default:
 		displayLines = m.buildDisplayLines(availW)
 	}
@@ -195,7 +219,7 @@ func (m Model) View() string {
 	}
 	end := min(start+maxVis, len(displayLines))
 
-	cursorLine, cursorCol := m.buf.CursorPos()
+	cursorLine, cursorCol := buf.CursorPos()
 	rendered := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
 		line := displayLines[i].text
@@ -207,12 +231,16 @@ func (m Model) View() string {
 	return m.style.Width(m.width).Render(strings.Join(rendered, "\n"))
 }
 
-func (m Model) renderEmptyLine() string {
+func (m Model) renderEmptyLine(maxWidth int) string {
+	if maxWidth < 1 {
+		maxWidth = 1
+	}
 	if m.placeholder == "" {
 		return m.cursorStyle.Render(" ")
 	}
 	dim := style.New().Foreground(style.Color("240")).Background(style.Color("236"))
-	runes := []rune(m.placeholder)
+	placeholder := ansi.Truncate(m.placeholder, maxWidth, "")
+	runes := []rune(placeholder)
 	if len(runes) == 0 {
 		return m.cursorStyle.Render(" ")
 	}
@@ -220,7 +248,7 @@ func (m Model) renderEmptyLine() string {
 }
 
 func (m Model) cursorDisplayLine(availW int) int {
-	cursorLine, cursorCol := m.buf.CursorPos()
+	cursorLine, cursorCol := m.readBuffer().CursorPos()
 	lines := m.buildDisplayLines(availW)
 	for i, line := range lines {
 		if line.bufLine == cursorLine && cursorCol >= line.startCol && cursorCol <= line.endCol {
@@ -257,7 +285,7 @@ type displayLine struct {
 }
 
 func (m Model) buildDisplayLines(availW int) []displayLine {
-	rawLines := strings.Split(m.buf.Value(), "\n")
+	rawLines := strings.Split(m.readBuffer().Value(), "\n")
 	lines := make([]displayLine, 0, len(rawLines))
 	for i, line := range rawLines {
 		lines = append(lines, wrapLineSegments(line, availW, i, 0)...)
@@ -266,6 +294,18 @@ func (m Model) buildDisplayLines(availW int) []displayLine {
 		return []displayLine{{text: ""}}
 	}
 	return lines
+}
+
+func (m Model) readBuffer() *buffer {
+	if m.buf == nil {
+		return newBuffer()
+	}
+	return m.buf
+}
+
+func (m Model) withBufferCopy() Model {
+	m.buf = m.readBuffer().Clone()
+	return m
 }
 
 func wrapLineSegments(line string, width int, bufLine, startCol int) []displayLine {

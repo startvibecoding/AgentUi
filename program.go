@@ -4,17 +4,21 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
+	"time"
 )
 
 type programConfig struct {
-	input       io.Reader
-	output      io.Writer
-	inputTTY    bool
-	reportFocus bool
-	mouse       bool
-	altScreen   bool
-	renderer    bool
+	input          io.Reader
+	output         io.Writer
+	inputTTY       bool
+	reportFocus    bool
+	mouse          bool
+	altScreen      bool
+	renderer       bool
+	bracketedPaste bool
+	escTimeout     time.Duration
 }
 
 // ProgramOption configures a Program.
@@ -55,6 +59,18 @@ func WithAltScreen() ProgramOption {
 	return func(c *programConfig) { c.altScreen = true }
 }
 
+// WithoutBracketedPaste disables terminal bracketed-paste mode.
+func WithoutBracketedPaste() ProgramOption {
+	return func(c *programConfig) { c.bracketedPaste = false }
+}
+
+// WithEscTimeout sets how long the input reader waits before treating a lone
+// escape byte as KeyEsc instead of the start of a longer escape sequence.
+// Passing a non-positive duration disables the timeout.
+func WithEscTimeout(d time.Duration) ProgramOption {
+	return func(c *programConfig) { c.escTimeout = d }
+}
+
 // WithoutRenderer disables automatic View rendering.
 func WithoutRenderer() ProgramOption {
 	return func(c *programConfig) { c.renderer = false }
@@ -77,10 +93,12 @@ type Program struct {
 // NewProgram creates a Program for m.
 func NewProgram(m Model, opts ...ProgramOption) *Program {
 	cfg := programConfig{
-		input:    os.Stdin,
-		output:   os.Stdout,
-		inputTTY: true,
-		renderer: true,
+		input:          os.Stdin,
+		output:         os.Stdout,
+		inputTTY:       true,
+		renderer:       true,
+		bracketedPaste: true,
+		escTimeout:     50 * time.Millisecond,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -120,7 +138,8 @@ func (p *Program) Println(s string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	fmt.Fprint(p.cfg.output, "\x1b[2K\r")
-	fmt.Fprintln(p.cfg.output, s)
+	fmt.Fprint(p.cfg.output, terminalLineEndings(s))
+	fmt.Fprint(p.cfg.output, "\r\n")
 	if p.cfg.renderer && p.last != "" {
 		p.renderLocked(p.last)
 	}
@@ -208,10 +227,40 @@ func (p *Program) exec(cmd Cmd) {
 			for _, cmd := range m {
 				p.exec(cmd)
 			}
+		case sequenceMsg:
+			p.execSequence(m)
 		default:
 			p.Send(msg)
 		}
 	}()
+}
+
+func (p *Program) execSequence(cmds []Cmd) {
+	for _, cmd := range cmds {
+		if cmd == nil {
+			continue
+		}
+		select {
+		case <-p.done:
+			return
+		default:
+		}
+		switch msg := cmd().(type) {
+		case nil:
+			continue
+		case batchMsg:
+			for _, cmd := range msg {
+				p.exec(cmd)
+			}
+		case sequenceMsg:
+			p.execSequence(msg)
+		case QuitMsg:
+			p.Send(msg)
+			return
+		default:
+			p.Send(msg)
+		}
+	}
 }
 
 func (p *Program) render() {
@@ -230,8 +279,27 @@ func (p *Program) renderLocked(view string) {
 		return
 	}
 	fmt.Fprint(p.cfg.output, "\x1b[?25l\x1b[H\x1b[2J")
-	fmt.Fprint(p.cfg.output, view)
+	fmt.Fprint(p.cfg.output, terminalLineEndings(view))
 	fmt.Fprint(p.cfg.output, "\x1b[0m")
+}
+
+func terminalLineEndings(s string) string {
+	if !strings.Contains(s, "\n") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + strings.Count(s, "\n"))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			if i == 0 || s[i-1] != '\r' {
+				b.WriteByte('\r')
+			}
+			b.WriteByte('\n')
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func (p *Program) close() {
@@ -257,11 +325,17 @@ func (p *Program) enterTerminalModes() {
 	if p.cfg.mouse {
 		fmt.Fprint(p.cfg.output, "\x1b[?1000h\x1b[?1006h")
 	}
+	if p.cfg.bracketedPaste {
+		fmt.Fprint(p.cfg.output, "\x1b[?2004h")
+	}
 }
 
 func (p *Program) exitTerminalModes() {
 	if p.cfg.output == nil {
 		return
+	}
+	if p.cfg.bracketedPaste {
+		fmt.Fprint(p.cfg.output, "\x1b[?2004l")
 	}
 	if p.cfg.mouse {
 		fmt.Fprint(p.cfg.output, "\x1b[?1006l\x1b[?1000l")

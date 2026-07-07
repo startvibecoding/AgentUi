@@ -3,6 +3,7 @@ package paste
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/startvibecoding/agentui"
 )
@@ -10,6 +11,11 @@ import (
 const (
 	DefaultMaxInlineLines = 5
 	DefaultMaxInlineChars = 500
+
+	// DefaultSplitPasteIdleDelay gives terminal split-paste chunks a longer
+	// quiet window than ordinary typing, so multiline pastes are coalesced
+	// before Enter is interpreted as submit.
+	DefaultSplitPasteIdleDelay = 120 * time.Millisecond
 )
 
 // Manager stores large paste payloads behind short input markers.
@@ -113,6 +119,27 @@ func HasLineBreak(keys []agentui.KeyMsg) bool {
 		}
 	}
 	return false
+}
+
+// SplitPasteIdleDelay returns the quiet period required before queued input
+// should be flushed. Multiline paste candidates get at least pasteDelay.
+func SplitPasteIdleDelay(keys []agentui.KeyMsg, normalDelay, pasteDelay time.Duration) time.Duration {
+	if pasteDelay <= 0 {
+		pasteDelay = DefaultSplitPasteIdleDelay
+	}
+	if HasLineBreak(keys) && normalDelay < pasteDelay {
+		return pasteDelay
+	}
+	return normalDelay
+}
+
+// SplitPasteIdle reports whether queued input has been quiet long enough to be
+// flushed, accounting for the longer delay used for multiline paste candidates.
+func SplitPasteIdle(keys []agentui.KeyMsg, lastInput, now time.Time, normalDelay, pasteDelay time.Duration) bool {
+	if len(keys) == 0 || lastInput.IsZero() {
+		return true
+	}
+	return now.Sub(lastInput) >= SplitPasteIdleDelay(keys, normalDelay, pasteDelay)
 }
 
 // CoalesceSplit turns terminals' split paste key events back into one string.

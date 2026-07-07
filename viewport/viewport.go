@@ -15,13 +15,16 @@ type Model struct {
 	Width        int
 	Height       int
 	content      string
+	items        []string
+	itemMode     bool
 	offset       int
 	followBottom bool
+	wrap         bool
 	style        style.Style
 }
 
 func New(width, height int) Model {
-	return Model{Width: width, Height: height, followBottom: true}
+	return Model{Width: width, Height: height, followBottom: true, wrap: true}
 }
 
 func (m Model) SetSize(width, height int) Model {
@@ -36,6 +39,8 @@ func (m Model) SetSize(width, height int) Model {
 
 func (m *Model) SetContent(content string) {
 	m.content = content
+	m.items = nil
+	m.itemMode = false
 	if m.followBottom {
 		m.offset = m.maxOffset()
 	}
@@ -43,6 +48,55 @@ func (m *Model) SetContent(content string) {
 }
 
 func (m Model) Content() string { return m.content }
+
+// SetItems replaces the viewport content with item blocks. Items are separated
+// by one blank visual line, matching transcript-style TUI layouts.
+func (m Model) SetItems(items []string) Model {
+	m.itemMode = true
+	m.items = append([]string(nil), items...)
+	m.content = joinItems(m.items)
+	if m.followBottom {
+		m.offset = m.maxOffset()
+	}
+	m.clampOffset()
+	return m
+}
+
+// AppendItem appends one item block. If the viewport is following the bottom,
+// it keeps the new content visible; otherwise the user's scroll position is
+// preserved.
+func (m Model) AppendItem(item string) Model {
+	if !m.itemMode {
+		m.items = nil
+		if m.content != "" {
+			m.items = append(m.items, m.content)
+		}
+		m.itemMode = true
+	}
+	m.items = append(m.items, item)
+	m.content = joinItems(m.items)
+	if m.followBottom {
+		m.offset = m.maxOffset()
+	}
+	m.clampOffset()
+	return m
+}
+
+func (m Model) ItemCount() int {
+	if !m.itemMode {
+		return 0
+	}
+	return len(m.items)
+}
+
+func (m Model) SetWrap(enabled bool) Model {
+	m.wrap = enabled
+	if m.followBottom {
+		m.offset = m.maxOffset()
+	}
+	m.clampOffset()
+	return m
+}
 
 func (m *Model) GotoBottom() {
 	m.followBottom = true
@@ -109,10 +163,7 @@ func (m Model) View() string {
 	if m.Width <= 0 || m.Height <= 0 {
 		return ""
 	}
-	lines := strings.Split(m.content, "\n")
-	if m.content == "" {
-		lines = nil
-	}
+	lines := m.visualLines()
 	offset := m.offset
 	if m.followBottom {
 		offset = max(0, len(lines)-m.Height)
@@ -134,15 +185,59 @@ func (m Model) View() string {
 }
 
 func (m Model) maxOffset() int {
-	if m.content == "" {
-		return 0
-	}
-	total := strings.Count(m.content, "\n") + 1
-	return max(0, total-m.Height)
+	return max(0, len(m.visualLines())-m.Height)
 }
 
 func (m *Model) clampOffset() {
 	m.offset = min(max(0, m.offset), m.maxOffset())
+}
+
+func (m Model) visualLines() []string {
+	raw := m.rawLines()
+	if len(raw) == 0 {
+		return nil
+	}
+	if !m.wrap || m.Width <= 0 {
+		return raw
+	}
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		wrapped := ansi.Wrap(line, m.Width, "/")
+		parts := strings.Split(wrapped, "\n")
+		if len(parts) == 0 {
+			lines = append(lines, "")
+			continue
+		}
+		lines = append(lines, parts...)
+	}
+	return lines
+}
+
+func (m Model) rawLines() []string {
+	if m.itemMode {
+		if len(m.items) == 0 {
+			return nil
+		}
+		lines := make([]string, 0, len(m.items)*2)
+		for i, item := range m.items {
+			if i > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, strings.Split(item, "\n")...)
+		}
+		return lines
+	}
+	if m.content == "" {
+		return nil
+	}
+	return strings.Split(m.content, "\n")
+}
+
+func joinItems(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return strings.Join(items, "\n\n")
 }
 
 func fitLine(line string, width int) string {

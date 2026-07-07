@@ -119,22 +119,31 @@ func (m Model) View() string {
 		offset = max(0, len(lines)-page)
 	}
 	end := min(offset+page, len(lines))
-	visible := strings.Join(lines[offset:end], "\n")
+	visibleLines := make([]string, 0, end-offset)
+	for _, line := range lines[offset:end] {
+		visibleLines = append(visibleLines, ansi.Truncate(line, innerWidth, ""))
+	}
+	visible := strings.Join(visibleLines, "\n")
 	title := m.TitleStyle.Render(ansi.Truncate(m.Title, innerWidth, "..."))
 	divider := strings.Repeat("─", min(innerWidth, ansi.StringWidth(ansi.Strip(title))))
 	status := m.Status
 	if status == "" {
-		status = fmt.Sprintf("lines %d-%d/%d  Up/Down:scroll  PgUp/PgDn:page  Esc:close", offset+1, end, len(lines))
+		status = fmt.Sprintf("lines %d-%d/%d  Esc:close  Up/Down:scroll  PgUp/PgDn:page", offset+1, end, len(lines))
 	}
+	status = ansi.Truncate(status, innerWidth, "")
 	content := title + "\n" + divider + "\n" + visible + "\n" + m.StatusStyle.Render(status)
-	return m.Style.Width(width).Height(page + 4).Render(content)
+	targetHeight := m.Height
+	if targetHeight <= 0 {
+		targetHeight = page + 5
+	}
+	return m.Style.Width(width).Height(targetHeight).Render(content)
 }
 
 func (m Model) pageSize() int {
-	if m.Height <= 4 {
+	if m.Height <= 5 {
 		return 1
 	}
-	return m.Height - 4
+	return m.Height - 5
 }
 
 func (m Model) maxOffset() int {
