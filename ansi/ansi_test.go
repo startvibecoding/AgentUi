@@ -56,6 +56,22 @@ func TestWrapPreservesMixedCJKASCIIOrder(t *testing.T) {
 	}
 }
 
+func TestWrapDropsBreakSpaceAtLineStart(t *testing.T) {
+	got := Wrap("\x1b[31mred green blue\x1b[0m", 5, "/")
+	plain := strings.ReplaceAll(Strip(got), "\n", " ")
+	if plain != "red green blue" {
+		t.Fatalf("Wrap carried break whitespace = %q, raw %q", plain, got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(Strip(line), " ") {
+			t.Fatalf("wrapped line starts with break whitespace: %q in %q", line, got)
+		}
+		if width := StringWidth(line); width > 5 {
+			t.Fatalf("line width = %d, want <= 5: %q", width, line)
+		}
+	}
+}
+
 func TestTruncatePreservesMixedCJKASCIIOrder(t *testing.T) {
 	input := "\x1b[3m用户查看 AGENTS 文件内容\x1b[0m"
 	got := Truncate(input, 15, "")

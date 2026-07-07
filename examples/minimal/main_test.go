@@ -6,9 +6,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	xansi "github.com/charmbracelet/x/ansi"
-
 	"github.com/startvibecoding/agentui"
+	"github.com/startvibecoding/agentui/ansi"
 )
 
 func TestAssistantMarkdownEmphasisPreservesTextOrder(t *testing.T) {
@@ -17,7 +16,7 @@ func TestAssistantMarkdownEmphasisPreservesTextOrder(t *testing.T) {
 	a.configureMarkdownRenderer()
 	a.addAssistantMarkdown("用户查看 *AGENTS* 文件内容")
 
-	got := xansi.Strip(a.renderAssistantMessage(len(a.messages) - 1))
+	got := ansi.Strip(a.renderAssistantMessage(len(a.messages) - 1))
 	got = strings.Join(strings.Fields(got), "")
 	want := "Assistant:用户查看AGENTS文件内容"
 	if got != want {
@@ -58,12 +57,12 @@ func TestAssistantMarkdownWrapsWithinAppWidth(t *testing.T) {
 
 	rendered := a.renderAssistantMessage(len(a.messages) - 1)
 	for _, line := range strings.Split(rendered, "\n") {
-		if width := xansi.StringWidth(line); width > a.width {
+		if width := ansi.StringWidth(line); width > a.width {
 			t.Fatalf("line width = %d, want <= %d: %q\nraw:\n%s", width, a.width, line, rendered)
 		}
 	}
 
-	plain := strings.Join(strings.Fields(xansi.Strip(rendered)), "")
+	plain := strings.Join(strings.Fields(ansi.Strip(rendered)), "")
 	for _, want := range []string{"用户查看AGENTS文件内容", "internal/tui/renderutil/ansi_wrap.go"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("rendered text missing %q in %q\nraw:\n%s", want, plain, rendered)
@@ -182,14 +181,14 @@ func TestMinimalViewportKeepsWrappedMarkdownText(t *testing.T) {
 	a.rebuild()
 
 	view := a.view.View()
-	plain := strings.Join(strings.Fields(xansi.Strip(view)), "")
+	plain := strings.Join(strings.Fields(ansi.Strip(view)), "")
 	for _, want := range []string{"用户查看AGENTS文件内容", "internal/tui/renderutil/ansi_wrap.go"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("viewport text missing %q in %q\nraw:\n%s", want, plain, view)
 		}
 	}
 	for _, line := range strings.Split(view, "\n") {
-		if width := xansi.StringWidth(line); width > a.width {
+		if width := ansi.StringWidth(line); width > a.width {
 			t.Fatalf("viewport line width = %d, want <= %d: %q\nraw:\n%s", width, a.width, line, view)
 		}
 	}
@@ -201,7 +200,7 @@ func TestMinimalInputBoxIsVisible(t *testing.T) {
 	a.height = 16
 	a.rebuild()
 
-	view := xansi.Strip(a.View())
+	view := ansi.Strip(a.View())
 	for _, want := range []string{"╭", "╰", "> Type here"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("minimal view missing input box marker %q:\n%s", want, view)
@@ -221,14 +220,14 @@ func TestMinimalPopupOpensAndFitsWidth(t *testing.T) {
 		t.Fatal("popup should be open after Ctrl+O")
 	}
 	view := a.View()
-	plain := xansi.Strip(view)
+	plain := ansi.Strip(view)
 	for _, want := range []string{"Regression popup", "弹框回归内容", "Esc/q/Ctrl+O close"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("popup view missing %q:\n%s", want, plain)
 		}
 	}
 	for _, line := range strings.Split(view, "\n") {
-		if width := xansi.StringWidth(line); width > a.width {
+		if width := ansi.StringWidth(line); width > a.width {
 			t.Fatalf("line width = %d, want <= %d: %q\nview:\n%s", width, a.width, line, view)
 		}
 	}
@@ -276,7 +275,7 @@ func TestMinimalSubmitShowsActiveTurnThenCommitPrintsAndClearsLiveView(t *testin
 	if cmd != nil {
 		t.Fatal("submit should keep the turn live instead of printing it immediately")
 	}
-	view := xansi.Strip(a.View())
+	view := ansi.Strip(a.View())
 	if !strings.Contains(view, "scrollback check") {
 		t.Fatalf("submitted text should be visible in active live view:\n%s", view)
 	}
@@ -289,7 +288,7 @@ func TestMinimalSubmitShowsActiveTurnThenCommitPrintsAndClearsLiveView(t *testin
 	if printCmd == nil {
 		t.Fatal("Ctrl+P should return print command for active turn")
 	}
-	view = xansi.Strip(a.View())
+	view = ansi.Strip(a.View())
 	if strings.Contains(view, "scrollback check") {
 		t.Fatalf("committed turn stayed in managed live view:\n%s", view)
 	}
@@ -326,7 +325,7 @@ func TestMinimalCommitCommandPrintsActiveTurn(t *testing.T) {
 	if printCmd == nil {
 		t.Fatal("/commit should return print command for active turn")
 	}
-	if view := xansi.Strip(a.View()); strings.Contains(view, "command commit") {
+	if view := ansi.Strip(a.View()); strings.Contains(view, "command commit") {
 		t.Fatalf("/commit should remove active turn from live view:\n%s", view)
 	}
 }
@@ -342,14 +341,14 @@ func TestMinimalSuggestionsShowForSlash(t *testing.T) {
 	if !a.suggest.Visible() {
 		t.Fatal("suggestions should be visible after slash")
 	}
-	view := xansi.Strip(a.View())
+	view := ansi.Strip(a.View())
 	for _, want := range []string{"/popup", "/markdown", "Tab apply"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("suggestion view missing %q:\n%s", want, view)
 		}
 	}
 	for _, line := range strings.Split(a.View(), "\n") {
-		if width := xansi.StringWidth(line); width > a.width {
+		if width := ansi.StringWidth(line); width > a.width {
 			t.Fatalf("line width = %d, want <= %d: %q\nview:\n%s", width, a.width, line, a.View())
 		}
 	}

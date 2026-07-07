@@ -3,7 +3,7 @@ package renderutil
 import (
 	"strings"
 
-	xansi "github.com/charmbracelet/x/ansi"
+	"github.com/startvibecoding/agentui/ansi"
 )
 
 const pathBreakpoints = "/"
@@ -14,12 +14,12 @@ func VisibleWidth(s string) int {
 	if s == "" {
 		return 0
 	}
-	return xansi.StringWidth(normalizeTabs(s))
+	return ansi.StringWidth(normalizeTabs(s))
 }
 
 // StripANSI removes ANSI escape sequences from s.
 func StripANSI(s string) string {
-	return xansi.Strip(s)
+	return ansi.Strip(s)
 }
 
 // WrapANSI wraps styled text to width cells. It preserves ANSI escape
@@ -27,7 +27,7 @@ func StripANSI(s string) string {
 // paths remain readable in narrow terminal viewports.
 func WrapANSI(text string, width int) string {
 	return wrapWith(text, width, func(line string) string {
-		return xansi.Wrap(line, width, pathBreakpoints)
+		return ansi.Wrap(line, width, pathBreakpoints)
 	})
 }
 
@@ -35,7 +35,7 @@ func WrapANSI(text string, width int) string {
 // path-specific token handling.
 func WrapPlainText(text string, width int) string {
 	return wrapWith(text, width, func(line string) string {
-		return xansi.Hardwrap(line, width, false)
+		return ansi.Hardwrap(line, width, false)
 	})
 }
 
@@ -66,14 +66,14 @@ func normalizeTabs(s string) string {
 }
 
 func trimRightVisibleASCIIWhitespace(s string) string {
-	plain := xansi.Strip(s)
+	plain := ansi.Strip(s)
 	trimmed := strings.TrimRight(plain, " \t")
 	if len(trimmed) == len(plain) {
 		return s
 	}
-	return xansi.Truncate(s, xansi.StringWidth(trimmed), "")
+	return ansi.Truncate(s, ansi.StringWidth(trimmed), "")
 }
 
 func isANSIBlankLine(s string) bool {
-	return strings.TrimSpace(xansi.Strip(s)) == ""
+	return strings.TrimSpace(ansi.Strip(s)) == ""
 }

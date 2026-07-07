@@ -14,9 +14,8 @@ go get github.com/startvibecoding/agentui
 ```
 
 `renderutil` and the minimal example use
-`github.com/startvibecoding/GoStreamingMarkdown` and
-`github.com/charmbracelet/x/ansi` for Markdown rendering compatible with the
-vibecoding TUI path.
+`github.com/startvibecoding/GoStreamingMarkdown` plus agentui's internal ANSI
+helpers for Markdown rendering compatible with the vibecoding TUI path.
 
 ## Features
 

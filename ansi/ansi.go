@@ -198,6 +198,9 @@ func wrapLine(s string, width int, breakpoints string, preserveSpace bool) []str
 			lineW = 0
 			lastBreakByte = -1
 			lastBreakOut = -1
+			if unicode.IsSpace(r) && !preserveSpace {
+				i += n
+			}
 			continue
 		}
 		if strings.ContainsRune(breakpoints, r) || unicode.IsSpace(r) {

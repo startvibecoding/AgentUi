@@ -13,9 +13,8 @@ go get github.com/startvibecoding/agentui
 ```
 
 `renderutil` 包和 minimal 示例使用
-`github.com/startvibecoding/GoStreamingMarkdown` 与
-`github.com/charmbracelet/x/ansi`，用于对齐 vibecoding TUI 当前的 Markdown
-渲染和 ANSI 折行路径。
+`github.com/startvibecoding/GoStreamingMarkdown` 以及 agentui 内部 ANSI
+helper，用于对齐 vibecoding TUI 当前的 Markdown 渲染和 ANSI 折行路径。
 
 ## 功能
 
