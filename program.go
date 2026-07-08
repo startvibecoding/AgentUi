@@ -433,22 +433,25 @@ func (p *Program) renderLocked(view string) {
 	if p.cfg.altScreen {
 		fmt.Fprint(p.cfg.output, "\x1b[?25l\x1b[H\x1b[2J")
 		p.resetAutoScrollback()
+		fmt.Fprint(p.cfg.output, terminalLineEndings(view))
+		fmt.Fprint(p.cfg.output, "\x1b[0m")
+		p.liveH = viewHeight(view)
+		return
 	} else {
 		fmt.Fprint(p.cfg.output, "\x1b[?25l\x1b[?7l")
-		p.clearLiveLocked()
 		commit, live := p.splitNormalView(view)
 		if commit != "" {
+			p.clearLiveLocked()
 			fmt.Fprint(p.cfg.output, terminalLineEndings(commit))
 			fmt.Fprint(p.cfg.output, "\r\n")
+			p.writeLiveLocked(live)
+		} else {
+			p.repaintLiveLocked(live)
 		}
-		view = live
-	}
-	fmt.Fprint(p.cfg.output, terminalLineEndings(view))
-	fmt.Fprint(p.cfg.output, "\x1b[0m")
-	if !p.cfg.altScreen {
+		fmt.Fprint(p.cfg.output, "\x1b[0m")
 		fmt.Fprint(p.cfg.output, "\x1b[?7h")
+		return
 	}
-	p.liveH = viewHeight(view)
 }
 
 func (p *Program) splitNormalView(view string) (string, string) {
@@ -531,6 +534,69 @@ func (p *Program) clearLiveLocked() {
 	}
 	fmt.Fprint(p.cfg.output, "\r")
 	p.liveH = 0
+}
+
+func (p *Program) writeLiveLocked(view string) {
+	if view == "" {
+		p.liveH = 0
+		return
+	}
+	fmt.Fprint(p.cfg.output, terminalLineEndings(view))
+	p.liveH = viewHeight(view)
+}
+
+func (p *Program) repaintLiveLocked(view string) {
+	if p.liveH <= 0 {
+		p.writeLiveLocked(view)
+		return
+	}
+	lines := viewLines(view)
+	if len(lines) == 0 {
+		p.clearLiveLocked()
+		return
+	}
+	oldH := p.liveH
+	if oldH > 1 {
+		fmt.Fprintf(p.cfg.output, "\x1b[%dA", oldH-1)
+	}
+
+	maxH := oldH
+	if len(lines) > maxH {
+		maxH = len(lines)
+	}
+	restoreCursor := false
+	for i := 0; i < maxH; i++ {
+		fmt.Fprint(p.cfg.output, "\r")
+		if i < len(lines) {
+			fmt.Fprint(p.cfg.output, terminalLineEndings(lines[i]))
+			fmt.Fprint(p.cfg.output, "\x1b[K")
+			if i == len(lines)-1 && oldH > len(lines) {
+				fmt.Fprint(p.cfg.output, "\x1b[s")
+				restoreCursor = true
+			}
+		} else {
+			fmt.Fprint(p.cfg.output, "\x1b[2K")
+		}
+		if i < maxH-1 {
+			if i+1 < oldH {
+				fmt.Fprint(p.cfg.output, "\x1b[1B")
+			} else {
+				fmt.Fprint(p.cfg.output, "\r\n")
+			}
+		}
+	}
+	if restoreCursor {
+		fmt.Fprint(p.cfg.output, "\x1b[u")
+	}
+	p.liveH = len(lines)
+}
+
+func viewLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.Split(s, "\n")
 }
 
 func viewHeight(s string) int {

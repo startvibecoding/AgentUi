@@ -222,6 +222,42 @@ func TestNormalRendererDisablesAutowrapAroundLiveView(t *testing.T) {
 	}
 }
 
+func TestNormalRendererRepaintsLiveViewInPlace(t *testing.T) {
+	var out bytes.Buffer
+	p := NewProgram(recordModel{view: "static\ninput: a"}, WithInput(nil), WithOutput(&out))
+
+	p.render()
+	out.Reset()
+	p.model = recordModel{view: "static\ninput: ab"}
+	p.render()
+
+	got := out.String()
+	if strings.Contains(got, "\x1b[2K") {
+		t.Fatalf("stable live repaint should not blank whole lines before redraw: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[1A\rstatic\x1b[K\x1b[1B\rinput: ab\x1b[K") {
+		t.Fatalf("stable live repaint should overwrite in place: %q", got)
+	}
+}
+
+func TestNormalRendererClearsStaleLinesAfterShrink(t *testing.T) {
+	var out bytes.Buffer
+	p := NewProgram(recordModel{view: "one\ntwo\nthree"}, WithInput(nil), WithOutput(&out))
+
+	p.render()
+	out.Reset()
+	p.model = recordModel{view: "one\ntwo"}
+	p.render()
+
+	got := out.String()
+	if !strings.Contains(got, "one\x1b[K\x1b[1B\rtwo\x1b[K\x1b[s\x1b[1B\r\x1b[2K\x1b[u") {
+		t.Fatalf("shrinking live repaint should clear stale bottom rows and restore cursor: %q", got)
+	}
+	if p.liveH != 2 {
+		t.Fatalf("liveH = %d, want 2", p.liveH)
+	}
+}
+
 func TestNormalRendererAutoCommitsOverflowToScrollback(t *testing.T) {
 	var out bytes.Buffer
 	p := NewProgram(
