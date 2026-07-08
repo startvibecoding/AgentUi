@@ -188,7 +188,7 @@ func (a *app) View() string {
 	}
 	footerText := ansi.Truncate(" / suggestions  Tab apply  Ctrl+O popup  Ctrl+P commit  Ctrl+C quit", a.width, "")
 	footer := style.New().Foreground(style.Color("240")).BorderTop(true).Width(a.width).Render(footerText)
-	return style.JoinVertical(body, a.suggest.View(), a.input.View(), footer)
+	return style.JoinVertical(style.Left, body, a.suggest.View(), a.input.View(), footer)
 }
 
 func (a *app) resize() {

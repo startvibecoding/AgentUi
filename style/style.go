@@ -11,6 +11,18 @@ import (
 // Color is an ANSI 256-color value expressed as a decimal string.
 type Color string
 
+// Position is a small compatibility type used by layout helpers.
+//
+// The constants intentionally stay small because AgentUI only needs the
+// alignment values used by code-agent layouts today.
+type Position = string
+
+const (
+	Left   Position = "left"
+	Top    Position = "top"
+	Center Position = "center"
+)
+
 // Border describes border glyphs.
 type Border struct {
 	Top         string
@@ -68,15 +80,21 @@ type Style struct {
 
 	border       bool
 	borderTop    bool
+	borderBottom bool
 	borderGlyphs Border
 
-	width    int
-	height   int
-	maxWidth int
+	width         int
+	height        int
+	maxWidth      int
+	marginRight   int
+	alignVertical Position
 }
 
 // New creates an empty style.
 func New() Style { return Style{} }
+
+// NewStyle is a Lip Gloss-compatible alias for New.
+func NewStyle() Style { return New() }
 
 func (s Style) Foreground(c Color) Style { s.fg = &c; return s }
 func (s Style) Background(c Color) Style { s.bg = &c; return s }
@@ -116,10 +134,16 @@ func (s Style) Border(b Border) Style {
 	return s
 }
 
-func (s Style) BorderTop(v bool) Style { s.borderTop = v; return s }
-func (s Style) Width(w int) Style      { s.width = max(0, w); return s }
-func (s Style) Height(h int) Style     { s.height = max(0, h); return s }
-func (s Style) MaxWidth(w int) Style   { s.maxWidth = max(0, w); return s }
+func (s Style) BorderTop(v bool) Style    { s.borderTop = v; return s }
+func (s Style) BorderBottom(v bool) Style { s.borderBottom = v; return s }
+func (s Style) Width(w int) Style         { s.width = max(0, w); return s }
+func (s Style) Height(h int) Style        { s.height = max(0, h); return s }
+func (s Style) MaxWidth(w int) Style      { s.maxWidth = max(0, w); return s }
+func (s Style) MarginRight(w int) Style   { s.marginRight = max(0, w); return s }
+func (s Style) AlignVertical(p Position) Style {
+	s.alignVertical = p
+	return s
+}
 
 func (s Style) GetHorizontalFrameSize() int {
 	n := s.paddingLeft + s.paddingRight
@@ -138,6 +162,7 @@ func (s Style) GetBackground() Color {
 
 // Render applies the style to text.
 func (s Style) Render(text string) string {
+	text = strings.ReplaceAll(text, "\t", "    ")
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	if len(lines) == 1 && lines[0] == "" && text == "" {
 		lines = []string{""}
@@ -149,19 +174,18 @@ func (s Style) Render(text string) string {
 	}
 	contentWidth := s.contentWidth(lines)
 	lines = s.padLines(lines, contentWidth)
-	if s.border || s.borderTop {
+	if s.border || s.borderTop || s.borderBottom {
 		lines = s.renderBorder(lines, contentWidth)
 	}
 	if s.height > 0 {
-		for len(lines) < s.height {
-			lines = append(lines, strings.Repeat(" ", ansi.StringWidth(lines[0])))
-		}
-		if len(lines) > s.height {
-			lines = lines[:s.height]
-		}
+		lines = s.fitHeight(lines)
 	}
 	out := strings.Join(lines, "\n")
-	return s.applyANSI(out)
+	out = s.applyANSI(out)
+	if s.marginRight > 0 {
+		out = addRightMargin(out, s.marginRight)
+	}
+	return out
 }
 
 func (s Style) contentWidth(lines []string) int {
@@ -173,7 +197,7 @@ func (s Style) contentWidth(lines []string) int {
 	}
 	if s.width > 0 {
 		frame := s.GetHorizontalFrameSize()
-		if s.borderTop && !s.border {
+		if (s.borderTop || s.borderBottom) && !s.border {
 			frame = 0
 		}
 		if target := s.width - frame; target > w {
@@ -219,8 +243,18 @@ func (s Style) renderBorder(lines []string, contentWidth int) []string {
 	if s.borderFg != nil {
 		top = ansiCode("38;5", *s.borderFg) + top + "\x1b[0m"
 	}
-	if s.borderTop && !s.border {
-		return append([]string{strings.Repeat(b.Top, innerW)}, lines...)
+	if (s.borderTop || s.borderBottom) && !s.border {
+		out := make([]string, 0, len(lines)+2)
+		if s.borderTop {
+			out = append(out, s.renderBorderLine(b.Top, innerW))
+		}
+		if !onlyBlankLines(lines) {
+			out = append(out, lines...)
+		}
+		if s.borderBottom {
+			out = append(out, s.renderBorderLine(b.Bottom, innerW))
+		}
+		return out
 	}
 	out := make([]string, 0, len(lines)+2)
 	out = append(out, top)
@@ -241,6 +275,68 @@ func (s Style) renderBorder(lines []string, contentWidth int) []string {
 	}
 	out = append(out, bottom)
 	return out
+}
+
+func (s Style) renderBorderLine(glyph string, width int) string {
+	if glyph == "" {
+		glyph = "─"
+	}
+	line := strings.Repeat(glyph, width)
+	if s.borderFg != nil {
+		line = ansiCode("38;5", *s.borderFg) + line + "\x1b[0m"
+	}
+	return line
+}
+
+func (s Style) fitHeight(lines []string) []string {
+	if len(lines) > s.height {
+		return lines[:s.height]
+	}
+	if len(lines) == s.height {
+		return lines
+	}
+	width := 0
+	for _, line := range lines {
+		if w := ansi.StringWidth(line); w > width {
+			width = w
+		}
+	}
+	blank := strings.Repeat(" ", width)
+	missing := s.height - len(lines)
+	topPad := 0
+	if s.alignVertical == Center {
+		topPad = missing / 2
+	}
+	out := make([]string, 0, s.height)
+	for i := 0; i < topPad; i++ {
+		out = append(out, blank)
+	}
+	out = append(out, lines...)
+	for len(out) < s.height {
+		out = append(out, blank)
+	}
+	return out
+}
+
+func addRightMargin(text string, margin int) string {
+	if text == "" || margin <= 0 {
+		return text
+	}
+	pad := strings.Repeat(" ", margin)
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] += pad
+	}
+	return strings.Join(lines, "\n")
+}
+
+func onlyBlankLines(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(ansi.Strip(line)) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (s Style) applyANSI(text string) string {
@@ -279,13 +375,24 @@ func ansiCode(prefix string, c Color) string {
 }
 
 // Width returns visible terminal width.
-func Width(s string) int { return ansi.StringWidth(s) }
+func Width(s string) int {
+	if s == "" {
+		return 0
+	}
+	maxWidth := 0
+	for _, line := range strings.Split(s, "\n") {
+		if w := ansi.StringWidth(line); w > maxWidth {
+			maxWidth = w
+		}
+	}
+	return maxWidth
+}
 
 // Height returns visible terminal height before wrapping.
 func Height(s string) int { return ansi.Height(s) }
 
 // JoinVertical joins blocks top-to-bottom.
-func JoinVertical(blocks ...string) string {
+func JoinVertical(_ Position, blocks ...string) string {
 	filtered := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		if block != "" {
@@ -296,7 +403,7 @@ func JoinVertical(blocks ...string) string {
 }
 
 // JoinHorizontal joins blocks line-by-line, padding shorter blocks.
-func JoinHorizontal(blocks ...string) string {
+func JoinHorizontal(_ Position, blocks ...string) string {
 	if len(blocks) == 0 {
 		return ""
 	}
